@@ -1,0 +1,7 @@
+/target
+/Naruto
+/NarutoShippuden
+*.part
+/scrape.log
+/.claude
+/AGENTS.md
