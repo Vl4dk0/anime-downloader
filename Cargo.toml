@@ -1,18 +1,23 @@
 [package]
-name = "naruto-scraper"
+name = "scraper"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", features = ["stream", "rustls-tls", "gzip"], default-features = false }
-scraper = "0.20"
-futures = "0.3"
-url = "2"
-percent-encoding = "2"
 anyhow = "1"
-regex = "1"
+clap = { version = "4", features = ["derive"] }
+futures = "0.3"
+inquire = "0.7"
 once_cell = "1"
+percent-encoding = "2"
+reqwest = { version = "0.12", default-features = false, features = [
+  "gzip",
+  "rustls-tls",
+  "stream"
+] }
+scraper = "0.27.0"
+tokio = { version = "1", features = ["full"] }
+url = "2"
 
 [profile.release]
 opt-level = 3

@@ -1,14 +1,14 @@
 use anyhow::{anyhow, Context, Result};
+use clap::{Parser, Subcommand};
 use futures::stream::{self, StreamExt};
+use inquire::MultiSelect;
 use once_cell::sync::Lazy;
 use percent_encoding::percent_decode_str;
-use regex::Regex;
 use reqwest::header::RANGE;
 use reqwest::Client;
 use reqwest::StatusCode;
 use scraper::{Html, Selector};
-use std::collections::BTreeSet;
-use std::env;
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
@@ -16,16 +16,27 @@ use url::Url;
 
 const UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 \
                   (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
-const RESOLVE_CONCURRENCY: usize = 24;
+const DISCOVERY_CONCURRENCY: usize = 24;
 const DOWNLOAD_CONCURRENCY: usize = 4;
 const RETRIES: usize = 5;
 
-const NARUTO_ROOT: &str =
-    "https://www.cartoonsarea.cc/Japanese-Dubbed-Videos/N-Subbed-Series/Naruto-Subbed-Videos/";
-const SHIPPUDEN_ROOT: &str =
-    "https://www.cartoonsarea.cc/Japanese-Dubbed-Videos/N-Subbed-Series/Naruto-Shippuden-Subbed-Videos/";
-const BORUTO_ROOT: &str =
-    "https://www.cartoonsarea.cc/Japanese-Dubbed-Videos/B-Subbed-Series/Boruto-Naruto-Next-Generation-Subbed-Videos/";
+#[derive(Debug, Clone, Copy)]
+struct Source {
+    key: &'static str,
+    root: &'static str,
+    dir: &'static str,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SourceChoice {
+    source: &'static Source,
+}
+
+impl fmt::Display for SourceChoice {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} ({})", self.source.key, self.source.dir)
+    }
+}
 
 #[derive(Debug)]
 struct Config {
@@ -41,86 +52,68 @@ struct DownloadJob {
     dest: PathBuf,
 }
 
-static A_SEL: Lazy<Selector> = Lazy::new(|| Selector::parse("a[href]").unwrap());
-static SEASON_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"Season-0*(\d+)").unwrap());
-static PAGE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"[?&]page=(\d+)").unwrap());
+#[derive(Debug, Parser)]
+#[command(name = "scraper")]
+#[command(about = "Scrape anime from cartoonsarea.cc")]
+struct Cli {
+    #[arg(short, long, default_value = ".")]
+    output: PathBuf,
 
-fn parse_args() -> Result<Config> {
-    let mut output = PathBuf::from(".");
-    let mut discovery_concurrency = RESOLVE_CONCURRENCY;
-    let mut download_concurrency = DOWNLOAD_CONCURRENCY;
-    let mut args = env::args().skip(1);
+    #[arg(long, default_value_t = DISCOVERY_CONCURRENCY)]
+    discovery: usize,
 
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "-o" | "--output" => {
-                let value = args
-                    .next()
-                    .ok_or_else(|| anyhow!("{arg} requires a path argument"))?;
-                output = PathBuf::from(value);
-            }
-            "--discovery" => {
-                let value = args
-                    .next()
-                    .ok_or_else(|| anyhow!("{arg} requires a number"))?;
-                discovery_concurrency = parse_positive_usize(&arg, &value)?;
-            }
-            "--download" => {
-                let value = args
-                    .next()
-                    .ok_or_else(|| anyhow!("{arg} requires a number"))?;
-                download_concurrency = parse_positive_usize(&arg, &value)?;
-            }
-            "-h" | "--help" => {
-                println!(
-                    "Usage: naruto-scraper [OPTIONS]\n\nOptions:\n  -o, --output <PATH>  Directory where series folders will be created\n      --discovery <N>  Concurrent HTML/link lookups [default: 24]\n      --download <N>   Concurrent video downloads [default: 4]\n  -h, --help           Print help"
-                );
-                std::process::exit(0);
-            }
-            _ if arg.starts_with("--output=") => {
-                let value = arg
-                    .split_once('=')
-                    .map(|(_, value)| value)
-                    .filter(|value| !value.is_empty())
-                    .ok_or_else(|| anyhow!("--output requires a path argument"))?;
-                output = PathBuf::from(value);
-            }
-            _ if arg.starts_with("--discovery=") => {
-                let value = arg
-                    .split_once('=')
-                    .map(|(_, value)| value)
-                    .filter(|value| !value.is_empty())
-                    .ok_or_else(|| anyhow!("--discovery requires a number"))?;
-                discovery_concurrency = parse_positive_usize("--discovery", value)?;
-            }
-            _ if arg.starts_with("--download=") => {
-                let value = arg
-                    .split_once('=')
-                    .map(|(_, value)| value)
-                    .filter(|value| !value.is_empty())
-                    .ok_or_else(|| anyhow!("--download requires a number"))?;
-                download_concurrency = parse_positive_usize("--download", value)?;
-            }
-            _ => return Err(anyhow!("unknown argument: {arg}")),
-        }
-    }
+    #[arg(long, default_value_t = DOWNLOAD_CONCURRENCY)]
+    download: usize,
 
-    Ok(Config {
-        output,
-        discovery_concurrency,
-        download_concurrency,
-    })
+    #[command(subcommand)]
+    command: Command,
 }
 
-fn parse_positive_usize(name: &str, value: &str) -> Result<usize> {
-    let parsed = value
-        .parse::<usize>()
-        .with_context(|| format!("{name} must be a positive number"))?;
-    if parsed == 0 {
-        return Err(anyhow!("{name} must be greater than zero"));
-    }
-    Ok(parsed)
+#[derive(Debug, Subcommand)]
+enum Command {
+    List,
+    Download {
+        sources: Vec<String>,
+
+        #[arg(long, conflicts_with_all = ["sources", "select"])]
+        all: bool,
+
+        #[arg(long, conflicts_with_all = ["sources", "all"])]
+        select: bool,
+    },
 }
+
+const SOURCES: &[Source] = &[
+    Source {
+        key: "naruto",
+        root: "https://www.cartoonsarea.cc/Japanese-Dubbed-Videos/N-Subbed-Series/Naruto-Subbed-Videos/",
+        dir: "Naruto",
+    },
+    Source {
+        key: "naruto-shippuden",
+        root: "https://www.cartoonsarea.cc/Japanese-Dubbed-Videos/N-Subbed-Series/Naruto-Shippuden-Subbed-Videos/",
+        dir: "NarutoShippuden",
+    },
+    Source {
+        key: "boruto",
+        root: "https://www.cartoonsarea.cc/Japanese-Dubbed-Videos/B-Subbed-Series/Boruto-Naruto-Next-Generation-Subbed-Videos/",
+        dir: "Boruto",
+    },
+    Source {
+        key: "death-note",
+        root: "https://www.cartoonsarea.cc/Japanese-Dubbed-Videos/D-Subbed-Series/Death-Note-Subbed-Videos/",
+        dir: "DeathNote",
+    },
+];
+
+static CONTENT_LINK_SEL: Lazy<Selector> =
+    Lazy::new(|| Selector::parse("div.none div.Singamdasam a[href]").unwrap());
+static PAGINATION_LINK_SEL: Lazy<Selector> =
+    Lazy::new(|| Selector::parse("ul.pagination a[href]").unwrap());
+static EPISODE_FILE_LINK_SEL: Lazy<Selector> =
+    Lazy::new(|| Selector::parse("div.Box div.Singamdasam table a[href]").unwrap());
+static DOWNLOAD_LINK_SEL: Lazy<Selector> =
+    Lazy::new(|| Selector::parse("a.download-btn[href]").unwrap());
 
 fn build_client() -> Result<Client> {
     Client::builder()
@@ -298,41 +291,52 @@ async fn flatten_existing_season_dirs(root: &Path) -> Result<()> {
     Ok(())
 }
 
-fn parse_season_num(url: &str) -> Option<u32> {
-    SEASON_RE
-        .captures(url)
-        .and_then(|c| c.get(1))
-        .and_then(|m| m.as_str().parse().ok())
-}
-
-fn collect_anchors(html: &str, base: &str, predicate: impl Fn(&str) -> bool) -> Vec<String> {
+fn collect_links_by_selector(html: &str, base: &str, selector: &Selector) -> Vec<String> {
     let doc = Html::parse_document(html);
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    for el in doc.select(&A_SEL) {
+    for el in doc.select(selector) {
         if let Some(href) = el.value().attr("href") {
-            if predicate(href) {
-                match resolve(base, href) {
-                    Ok(abs) => {
-                        if seen.insert(abs.clone()) {
-                            out.push(abs);
-                        }
+            match resolve(base, href) {
+                Ok(abs) => {
+                    if seen.insert(abs.clone()) {
+                        out.push(abs);
                     }
-                    Err(e) => eprintln!("? skip href {href}: {e:#}"),
                 }
+                Err(e) => eprintln!("? skip href {href}: {e:#}"),
             }
         }
     }
     out
 }
 
-fn raw_hrefs(html: &str, predicate: impl Fn(&str) -> bool) -> Vec<String> {
+fn collect_first_link_by_selector(html: &str, base: &str, selector: &Selector) -> Option<String> {
+    collect_links_by_selector(html, base, selector)
+        .into_iter()
+        .next()
+}
+
+fn collect_content_links(html: &str, base: &str) -> Vec<String> {
+    collect_links_by_selector(html, base, &CONTENT_LINK_SEL)
+}
+
+fn collect_pagination_links(html: &str, base: &str) -> Vec<String> {
     let doc = Html::parse_document(html);
     let mut out = Vec::new();
-    for el in doc.select(&A_SEL) {
+    let mut seen = std::collections::HashSet::new();
+    for el in doc.select(&PAGINATION_LINK_SEL) {
+        let class = el.value().attr("class").unwrap_or("");
+        if class.split_whitespace().any(|name| name == "active") {
+            continue;
+        }
         if let Some(href) = el.value().attr("href") {
-            if predicate(href) {
-                out.push(href.to_string());
+            match resolve(base, href) {
+                Ok(abs) => {
+                    if seen.insert(abs.clone()) {
+                        out.push(abs);
+                    }
+                }
+                Err(e) => eprintln!("? skip href {href}: {e:#}"),
             }
         }
     }
@@ -441,18 +445,13 @@ async fn resolve_episode(
     out_root: PathBuf,
 ) -> Result<DownloadJob> {
     let html = fetch_html(client, &episode_page_url).await?;
-    let mp4_php_url = collect_anchors(&html, &episode_page_url, |h| h.contains(".mp4.php"))
-        .into_iter()
-        .next()
-        .ok_or_else(|| anyhow!("no .mp4.php link on {episode_page_url}"))?;
+    let mp4_php_url =
+        collect_first_link_by_selector(&html, &episode_page_url, &EPISODE_FILE_LINK_SEL)
+            .ok_or_else(|| anyhow!("no episode file link on {episode_page_url}"))?;
 
     let html = fetch_html(client, &mp4_php_url).await?;
-    let mp4_url = collect_anchors(&html, &mp4_php_url, |h| {
-        h.contains("/USER-DATA/") && h.ends_with(".mp4")
-    })
-    .into_iter()
-    .next()
-    .ok_or_else(|| anyhow!("no /USER-DATA/ mp4 link on {mp4_php_url}"))?;
+    let mp4_url = collect_first_link_by_selector(&html, &mp4_php_url, &DOWNLOAD_LINK_SEL)
+        .ok_or_else(|| anyhow!("no download button on {mp4_php_url}"))?;
 
     let basename = mp4_url
         .rsplit('/')
@@ -467,37 +466,30 @@ async fn resolve_episode(
     })
 }
 
-fn max_page(html: &str) -> u32 {
-    raw_hrefs(html, |h| h.contains("page="))
-        .iter()
-        .filter_map(|h| {
-            PAGE_RE
-                .captures(h)
-                .and_then(|c| c.get(1))
-                .and_then(|m| m.as_str().parse::<u32>().ok())
-        })
-        .max()
-        .unwrap_or(1)
-}
-
 async fn collect_episodes_paginated(
     client: &Client,
     season_url: &str,
     discovery_concurrency: usize,
 ) -> Result<Vec<String>> {
     let first = fetch_html(client, season_url).await?;
-    let pages = max_page(&first);
-    let mut episodes: BTreeSet<String> = BTreeSet::new();
-    for ep in collect_anchors(&first, season_url, |h| h.contains("-Episode-")) {
-        episodes.insert(ep);
+    let mut episodes = Vec::new();
+    let mut seen_episodes = std::collections::HashSet::new();
+    for ep in collect_content_links(&first, season_url) {
+        if seen_episodes.insert(ep.clone()) {
+            episodes.push(ep);
+        }
     }
 
-    let page_results = stream::iter((2..=pages).map(|p| {
-        let page_url = format!("{season_url}?page={p}");
-        async move {
-            let result = fetch_html(client, &page_url).await;
-            (page_url, result)
-        }
+    let mut seen_pages = std::collections::HashSet::new();
+    seen_pages.insert(season_url.to_string());
+    let page_urls = collect_pagination_links(&first, season_url)
+        .into_iter()
+        .filter(|page_url| seen_pages.insert(page_url.clone()))
+        .collect::<Vec<_>>();
+
+    let page_results = stream::iter(page_urls.into_iter().map(|page_url| async move {
+        let result = fetch_html(client, &page_url).await;
+        (page_url, result)
     }))
     .buffer_unordered(discovery_concurrency)
     .collect::<Vec<_>>()
@@ -506,14 +498,16 @@ async fn collect_episodes_paginated(
     for (page_url, result) in page_results {
         match result {
             Ok(html) => {
-                for ep in collect_anchors(&html, &page_url, |h| h.contains("-Episode-")) {
-                    episodes.insert(ep);
+                for ep in collect_content_links(&html, &page_url) {
+                    if seen_episodes.insert(ep.clone()) {
+                        episodes.push(ep);
+                    }
                 }
             }
             Err(e) => eprintln!("! page fetch failed {page_url}: {e:#}"),
         }
     }
-    Ok(episodes.into_iter().collect())
+    Ok(episodes)
 }
 
 async fn scrape_series(
@@ -529,17 +523,9 @@ async fn scrape_series(
         .with_context(|| format!("create series directory {}", out_root.display()))?;
 
     let html = fetch_html(client, series_url).await?;
-    let mut seasons = collect_anchors(&html, series_url, |h| {
-        h.contains("Season-") && SEASON_RE.is_match(h)
-    });
-    seasons.sort_by_key(|u| parse_season_num(u).unwrap_or(u32::MAX));
+    let seasons = collect_content_links(&html, series_url);
 
     for season_url in seasons {
-        let Some(num) = parse_season_num(&season_url) else {
-            eprintln!("? unparseable season url: {season_url}");
-            continue;
-        };
-
         let episodes =
             match collect_episodes_paginated(client, &season_url, config.discovery_concurrency)
                 .await
@@ -550,7 +536,7 @@ async fn scrape_series(
                     continue;
                 }
             };
-        println!("[{label}] season {num}: {} episodes", episodes.len());
+        println!("[{label}] {season_url}: {} episodes", episodes.len());
 
         let client_ref = client;
         let out_root_ref = out_root.to_path_buf();
@@ -574,7 +560,7 @@ async fn scrape_series(
         }
 
         println!(
-            "[{label}] season {num}: downloading {} files with concurrency {}",
+            "[{label}] {season_url}: downloading {} files with concurrency {}",
             jobs.len(),
             config.download_concurrency
         );
@@ -599,30 +585,90 @@ async fn scrape_series(
     Ok(())
 }
 
+fn find_source(key: &str) -> Result<&'static Source> {
+    SOURCES
+        .iter()
+        .find(|s| s.key == key)
+        .ok_or_else(|| anyhow!("unknown source: {key}"))
+}
+
+fn select_sources_interactive() -> Result<Vec<&'static Source>> {
+    let choices = SOURCES
+        .iter()
+        .map(|source| SourceChoice { source })
+        .collect::<Vec<_>>();
+
+    let selected = MultiSelect::new("Select sources to download:", choices)
+        .prompt()
+        .context("select sources")?;
+
+    if selected.is_empty() {
+        return Err(anyhow!("no sources selected"));
+    }
+
+    Ok(selected.into_iter().map(|choice| choice.source).collect())
+}
+
+fn find_sources(keys: &[String]) -> Result<Vec<&'static Source>> {
+    if keys.is_empty() {
+        return Err(anyhow!(
+            "no source selected; use `scraper list`, `scraper download --select`, or `scraper download --all`"
+        ));
+    }
+
+    keys.iter().map(|key| find_source(key)).collect()
+}
+
+async fn scrape_selected_sources(
+    client: &Client,
+    config: &Config,
+    selected: Vec<&'static Source>,
+) -> Result<()> {
+    for source in selected {
+        let source_dir = config.output.join(source.dir);
+        flatten_existing_season_dirs(&source_dir).await?;
+        sanitize_existing(&source_dir).await?;
+
+        scrape_series(client, source.root, &source_dir, config).await?;
+    }
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    let config = parse_args()?;
-    tokio::fs::create_dir_all(&config.output)
-        .await
-        .with_context(|| format!("create output directory {}", config.output.display()))?;
-
-    let naruto_dir = config.output.join("Naruto");
-    let shippuden_dir = config.output.join("NarutoShippuden");
-    let boruto_dir = config.output.join("Boruto");
-
-    println!("Output: {}", config.output.display());
-
-    flatten_existing_season_dirs(&naruto_dir).await?;
-    flatten_existing_season_dirs(&shippuden_dir).await?;
-    flatten_existing_season_dirs(&boruto_dir).await?;
-
-    sanitize_existing(&naruto_dir).await?;
-    sanitize_existing(&shippuden_dir).await?;
-    sanitize_existing(&boruto_dir).await?;
-
+    let cli = Cli::parse();
+    let config = Config {
+        output: cli.output,
+        discovery_concurrency: cli.discovery,
+        download_concurrency: cli.download,
+    };
     let client = build_client()?;
-    scrape_series(&client, NARUTO_ROOT, &naruto_dir, &config).await?;
-    scrape_series(&client, SHIPPUDEN_ROOT, &shippuden_dir, &config).await?;
-    scrape_series(&client, BORUTO_ROOT, &boruto_dir, &config).await?;
+
+    match cli.command {
+        Command::List => {
+            println!("Available sources:");
+            for source in SOURCES {
+                println!("> {}: {}", source.key, source.root);
+            }
+            return Ok(());
+        }
+        Command::Download {
+            sources,
+            all,
+            select,
+        } => {
+            let selected = if all {
+                SOURCES.iter().collect()
+            } else if select {
+                select_sources_interactive()?
+            } else {
+                find_sources(&sources)?
+            };
+
+            scrape_selected_sources(&client, &config, selected).await?;
+        }
+    }
+
     Ok(())
 }
