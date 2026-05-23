@@ -104,6 +104,21 @@ const SOURCES: &[Source] = &[
         root: "https://www.cartoonsarea.cc/Japanese-Dubbed-Videos/D-Subbed-Series/Death-Note-Subbed-Videos/",
         dir: "DeathNote",
     },
+    Source {
+        key: "one-punch-man",
+        root: "https://www.cartoonsarea.cc/Japanese-Dubbed-Videos/O-Subbed-Series/One-Punch-Man-Subbed-Videos/",
+        dir: "OnePunchMan",
+    },
+    Source {
+        key: "demon-slayer",
+        root: "https://www.cartoonsarea.cc/Japanese-Dubbed-Videos/K-Subbed-Series/Kimetsu-No-Yaiba-Subbed-Videos/",
+        dir: "DemonSlayer",
+    },
+    Source {
+        key: "death-note-en",
+        root: "https://eng.cartoonsarea.cc/English-Dubbed-Series/D-Dubbed-Series/Death-Note-Dubbed-Videos",
+        dir: "DeathNoteEn",
+    },
 ];
 
 static CONTENT_LINK_SEL: Lazy<Selector> =
