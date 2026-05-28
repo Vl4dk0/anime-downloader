@@ -119,6 +119,11 @@ const SOURCES: &[Source] = &[
         root: "https://eng.cartoonsarea.cc/English-Dubbed-Series/D-Dubbed-Series/Death-Note-Dubbed-Videos",
         dir: "DeathNoteEn",
     },
+    Source {
+        key: "food-wars",
+        root: "https://www.cartoonsarea.cc/Japanese-Dubbed-Videos/F-Subbed-Series/Food-Wars-Subbed-Videos/",
+        dir: "FoodWars",
+    },
 ];
 
 static CONTENT_LINK_SEL: Lazy<Selector> =
