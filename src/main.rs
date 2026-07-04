@@ -124,6 +124,11 @@ const SOURCES: &[Source] = &[
         root: "https://www.cartoonsarea.cc/Japanese-Dubbed-Videos/F-Subbed-Series/Food-Wars-Subbed-Videos/",
         dir: "FoodWars",
     },
+    Source {
+        key: "the-promised-neverland",
+        root: "https://eng.cartoonsarea.cc/English-Dubbed-Series/T-Dubbed-Series/The-Promised-Neverland-Dubbed-Videos/",
+        dir: "ThePromisedNeverland",
+    }
 ];
 
 static CONTENT_LINK_SEL: Lazy<Selector> =
