@@ -145,21 +145,14 @@ async fn download_once(
         .with_context(|| format!("status for {url}"))?;
     let resumed = existing > 0 && status == StatusCode::PARTIAL_CONTENT;
     let start = if resumed { existing } else { 0 };
-    if status == StatusCode::PARTIAL_CONTENT {
-        let range_start = response
-            .headers()
-            .get(CONTENT_RANGE)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.strip_prefix("bytes "))
-            .and_then(|v| v.split_once('-'))
-            .and_then(|(n, _)| n.parse::<u64>().ok());
-        if range_start != Some(start) {
-            bail!("invalid resume range for {url}");
-        }
-    }
-    let size = response
-        .content_length()
-        .and_then(|len| len.checked_add(start));
+    let range = response
+        .headers()
+        .get(CONTENT_RANGE)
+        .map(|value| value.to_str())
+        .transpose()
+        .context("invalid Content-Range header")?;
+    let size = expected_size(status, start, response.content_length(), range)
+        .with_context(|| format!("validate response size for {url}"))?;
     let mut file = tokio::fs::OpenOptions::new()
         .create(true)
         .write(true)
@@ -185,16 +178,124 @@ async fn download_once(
             last_report = Instant::now();
         }
     }
-    if size.is_some_and(|size| bytes != size) {
-        bail!("incomplete download for {url}: {bytes} bytes received");
-    }
     file.flush()
         .await
         .with_context(|| format!("flush {}", part.display()))?;
     drop(file);
+    validate_complete(bytes, size).with_context(|| format!("finish download for {url}"))?;
     tokio::fs::rename(&part, dest)
         .await
         .with_context(|| format!("finish {}", dest.display()))?;
     report(Progress::Bytes(bytes));
     Ok(())
+}
+
+// A range's length describes only this response; its total describes the whole video.
+fn expected_size(
+    status: StatusCode,
+    start: u64,
+    length: Option<u64>,
+    range: Option<&str>,
+) -> Result<Option<u64>> {
+    let length_total = length
+        .map(|length| start.checked_add(length).context("download size overflow"))
+        .transpose()?;
+    let Some(range) = range else {
+        anyhow::ensure!(
+            status != StatusCode::PARTIAL_CONTENT,
+            "missing resume range"
+        );
+        return Ok(length_total);
+    };
+    let (bounds, total) = range
+        .strip_prefix("bytes ")
+        .and_then(|range| range.split_once('/'))
+        .context("invalid Content-Range")?;
+    let (first, last) = bounds.split_once('-').context("invalid range bounds")?;
+    let first = first.parse::<u64>().context("invalid range start")?;
+    let last = last.parse::<u64>().context("invalid range end")?;
+    anyhow::ensure!(first == start && last >= first, "invalid resume range");
+    let end = last.checked_add(1).context("range size overflow")?;
+    anyhow::ensure!(
+        length_total.is_none_or(|length_total| length_total == end),
+        "Content-Length disagrees with Content-Range"
+    );
+    if total == "*" {
+        return Ok(length_total);
+    }
+    let total = total.parse::<u64>().context("invalid range total")?;
+    anyhow::ensure!(end <= total, "range exceeds video size");
+    Ok(Some(total))
+}
+
+fn validate_complete(bytes: u64, size: Option<u64>) -> Result<()> {
+    let size = size.context("unknown video size; partial download kept for resuming")?;
+    anyhow::ensure!(
+        bytes == size,
+        "incomplete download: {bytes} of {size} bytes received"
+    );
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn response_sizes_distinguish_ranges_from_complete_videos() {
+        let partial = StatusCode::PARTIAL_CONTENT;
+        assert_eq!(
+            expected_size(StatusCode::OK, 0, Some(10), None).unwrap(),
+            Some(10)
+        );
+        assert_eq!(expected_size(StatusCode::OK, 0, None, None).unwrap(), None);
+        assert_eq!(
+            expected_size(StatusCode::OK, 0, None, Some("bytes 0-9/10")).unwrap(),
+            Some(10)
+        );
+        assert_eq!(
+            expected_size(partial, 5, None, Some("bytes 5-9/10")).unwrap(),
+            Some(10)
+        );
+        assert_eq!(
+            expected_size(partial, 5, Some(3), Some("bytes 5-7/10")).unwrap(),
+            Some(10)
+        );
+        assert_eq!(
+            expected_size(partial, 5, None, Some("bytes 5-9/*")).unwrap(),
+            None
+        );
+        for range in [
+            None,
+            Some("bytes 4-9/10"),
+            Some("bytes 5-10/10"),
+            Some("bytes 5-4/10"),
+            Some("bytes 5-9/no"),
+        ] {
+            assert!(expected_size(partial, 5, None, range).is_err());
+        }
+        assert!(expected_size(partial, 5, Some(3), Some("bytes 5-9/10")).is_err());
+        assert!(expected_size(StatusCode::OK, 0, None, Some("invalid")).is_err());
+        assert!(expected_size(partial, u64::MAX, Some(1), None).is_err());
+    }
+
+    #[test]
+    fn only_known_complete_sizes_can_be_finalized() {
+        assert!(validate_complete(10, Some(10)).is_ok());
+        for (bytes, size) in [(5, Some(10)), (11, Some(10)), (10, None)] {
+            assert!(validate_complete(bytes, size).is_err());
+        }
+        let size =
+            expected_size(StatusCode::PARTIAL_CONTENT, 5, None, Some("bytes 5-9/10")).unwrap();
+        assert!(validate_complete(10, size).is_ok());
+        assert!(validate_complete(8, size).is_err());
+        let size = expected_size(
+            StatusCode::PARTIAL_CONTENT,
+            5,
+            Some(3),
+            Some("bytes 5-7/10"),
+        )
+        .unwrap();
+        assert!(validate_complete(8, size).is_err());
+    }
 }
