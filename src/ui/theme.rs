@@ -100,7 +100,7 @@ fn visuals(base: Visuals, p: &Palette) -> Visuals {
         weak_bg_fill: fill,
         bg_stroke: stroke,
         corner_radius: radius,
-        fg_stroke: Stroke::new(1.0, p.fg),
+        fg_stroke: Stroke::new(1.0_f32, p.fg),
         expansion: 0.0,
     };
     let mut v = base;
@@ -111,7 +111,7 @@ fn visuals(base: Visuals, p: &Palette) -> Visuals {
     v.error_fg_color = p.fg;
     v.panel_fill = p.bg;
     v.window_fill = p.bg;
-    v.window_stroke = Stroke::new(1.0, p.outline);
+    v.window_stroke = Stroke::new(1.0_f32, p.outline);
     v.window_shadow = Shadow::NONE;
     v.popup_shadow = Shadow::NONE;
     v.extreme_bg_color = p.bg;
@@ -119,13 +119,13 @@ fn visuals(base: Visuals, p: &Palette) -> Visuals {
     v.faint_bg_color = p.hover;
     v.code_bg_color = p.hover;
     v.selection.bg_fill = p.selection;
-    v.selection.stroke = Stroke::new(1.5, p.fg);
-    v.text_cursor.stroke = Stroke::new(2.0, p.fg);
-    v.widgets.noninteractive = widget(p.bg, Stroke::new(1.0, p.line));
-    v.widgets.inactive = widget(p.bg, Stroke::new(1.0, p.outline));
-    v.widgets.hovered = widget(p.hover, Stroke::new(1.0, p.fg));
-    v.widgets.active = widget(p.pressed, Stroke::new(1.5, p.fg));
-    v.widgets.open = widget(p.hover, Stroke::new(1.0, p.fg));
+    v.selection.stroke = Stroke::new(1.5_f32, p.fg);
+    v.text_cursor.stroke = Stroke::new(2.0_f32, p.fg);
+    v.widgets.noninteractive = widget(p.bg, Stroke::new(1.0_f32, p.line));
+    v.widgets.inactive = widget(p.bg, Stroke::new(1.0_f32, p.outline));
+    v.widgets.hovered = widget(p.hover, Stroke::new(1.0_f32, p.fg));
+    v.widgets.active = widget(p.pressed, Stroke::new(1.5_f32, p.fg));
+    v.widgets.open = widget(p.hover, Stroke::new(1.0_f32, p.fg));
     v
 }
 

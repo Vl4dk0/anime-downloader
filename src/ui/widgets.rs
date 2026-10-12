@@ -45,7 +45,7 @@ fn paint_badge(ui: &Ui, rect: Rect, galley: std::sync::Arc<egui::Galley>) {
     ui.painter().rect_stroke(
         rect,
         4.0,
-        Stroke::new(1.0, p.outline),
+        Stroke::new(1.0_f32, p.outline),
         egui::StrokeKind::Inside,
     );
     let pos = rect.center() - galley.size() / 2.0;
@@ -110,7 +110,7 @@ pub fn primary_button(ui: &mut Ui, enabled: bool, text: &str) -> Response {
         ] {
             state.weak_bg_fill = fill;
             state.bg_fill = fill;
-            state.bg_stroke = Stroke::new(1.0, p.fg);
+            state.bg_stroke = Stroke::new(1.0_f32, p.fg);
         }
         ui.add_enabled(
             enabled,
@@ -138,7 +138,7 @@ pub fn notice(ui: &mut Ui, lead: &str, text: &str, action: Option<&str>) -> bool
     let p = Palette::of(ui.visuals());
     let mut clicked = false;
     egui::Frame::new()
-        .stroke(Stroke::new(1.5, p.fg))
+        .stroke(Stroke::new(1.5_f32, p.fg))
         .corner_radius(6.0)
         .inner_margin(SPACE_MD)
         .show(ui, |ui| {
@@ -180,7 +180,7 @@ pub fn row(ui: &mut Ui, height: f32, sense: Sense) -> (Rect, Response) {
             ui.painter().rect_filled(rect, 0.0, fill);
         }
         ui.painter()
-            .hline(rect.x_range(), rect.bottom(), Stroke::new(1.0, p.line));
+            .hline(rect.x_range(), rect.bottom(), Stroke::new(1.0_f32, p.line));
     }
     (rect, response)
 }

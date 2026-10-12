@@ -177,7 +177,7 @@ fn series_row(ui: &mut egui::Ui, series: &Series) -> bool {
         p.fg,
     );
     let tip = egui::pos2(rect.right() - SPACE_LG, rect.center().y);
-    let stroke = Stroke::new(1.5, p.muted);
+    let stroke = Stroke::new(1.5_f32, p.muted);
     ui.painter()
         .line_segment([tip + vec2(-5.0, -6.0), tip], stroke);
     ui.painter()
