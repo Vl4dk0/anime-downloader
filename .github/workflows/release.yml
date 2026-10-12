@@ -1,0 +1,101 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset: anime-downloader-windows-x64.exe
+            rustflags: -C target-feature=+crt-static
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            asset: anime-downloader-macos-arm64.zip
+            rustflags: ''
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            asset: anime-downloader-macos-x64.zip
+            rustflags: ''
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Set macOS SDK for both architectures
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          echo "SDKROOT=$(xcrun --sdk macosx --show-sdk-path)" >> "$GITHUB_ENV"
+          echo 'MACOSX_DEPLOYMENT_TARGET=11.0' >> "$GITHUB_ENV"
+      - name: Build
+        env:
+          RUSTFLAGS: ${{ matrix.rustflags }}
+        run: cargo build --locked --release --target ${{ matrix.target }}
+      - name: Package Windows executable
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path dist
+          Copy-Item "target/${{ matrix.target }}/release/anime-downloader.exe" "dist/${{ matrix.asset }}"
+      - name: Bundle macOS application
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
+          RELEASE_ASSET: ${{ matrix.asset }}
+        run: |
+          app='dist/Anime Downloader.app'
+          mkdir -p "$app/Contents/MacOS"
+          cp "target/$BUILD_TARGET/release/anime-downloader" "$app/Contents/MacOS/anime-downloader"
+          chmod +x "$app/Contents/MacOS/anime-downloader"
+          version=$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json, sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "anime-downloader"))')
+          cat > "$app/Contents/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>CFBundleName</key><string>Anime Downloader</string>
+            <key>CFBundleDisplayName</key><string>Anime Downloader</string>
+            <key>CFBundleExecutable</key><string>anime-downloader</string>
+            <key>CFBundleIdentifier</key><string>cc.cartoonsarea.anime-downloader</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>$version</string>
+            <key>CFBundleVersion</key><string>$version</string>
+            <key>LSMinimumSystemVersion</key><string>11.0</string>
+            <key>NSHighResolutionCapable</key><true/>
+          </dict></plist>
+          EOF
+          plutil -lint "$app/Contents/Info.plist"
+          ditto -c -k --sequesterRsrc --keepParent "$app" "dist/$RELEASE_ASSET"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/${{ matrix.asset }}
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: dist/*
+          fail_on_unmatched_files: true
