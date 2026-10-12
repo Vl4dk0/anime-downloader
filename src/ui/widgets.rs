@@ -1,7 +1,7 @@
 //! Small widgets shared by every screen, so that screens stay consistent and
 //! only describe what they show.
 
-use super::theme::{Palette, SPACE_LG, SPACE_MD};
+use super::theme::{Palette, BUTTON_HEIGHT, SPACE_LG, SPACE_MD};
 use anime_downloader::site::Kind;
 use eframe::egui::{
     self, text::LayoutJob, vec2, Align, Align2, Button, CursorIcon, FontId, Layout, Pos2, Rect,
@@ -114,14 +114,18 @@ pub fn primary_button(ui: &mut Ui, enabled: bool, text: &str) -> Response {
         }
         ui.add_enabled(
             enabled,
-            Button::new(RichText::new(text).strong().color(p.bg)).min_size(vec2(180.0, 40.0)),
+            Button::new(RichText::new(text).strong().color(p.bg))
+                .min_size(vec2(180.0, BUTTON_HEIGHT)),
         )
     })
     .inner
 }
 
 pub fn secondary_button(ui: &mut Ui, enabled: bool, text: &str) -> Response {
-    ui.add_enabled(enabled, Button::new(text).min_size(vec2(0.0, 40.0)))
+    ui.add_enabled(
+        enabled,
+        Button::new(text).min_size(vec2(0.0, BUTTON_HEIGHT)),
+    )
 }
 
 pub fn small_button(ui: &mut Ui, text: &str) -> Response {

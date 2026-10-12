@@ -65,41 +65,39 @@ impl App {
             egui::TopBottomPanel::bottom("footer")
                 .frame(theme::header_frame(ctx))
                 .show(ctx, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            choose = widgets::secondary_button(
-                                ui,
-                                !self.choosing_folder,
-                                "Choose folder…",
-                            )
-                            .clicked();
-                            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                                let folder = self
-                                    .folder
-                                    .as_ref()
-                                    .map(|path| path.display().to_string())
-                                    .unwrap_or_else(|| "no folder chosen".into());
-                                ui.add(egui::Label::new(format!("Save to {folder}")).truncate());
-                            });
-                        });
-                    });
-                    ui.horizontal(|ui| {
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            let enabled = self.folder.is_some() && ticked_count > 0;
-                            let label = match ticked_count {
-                                0 => "Download".to_owned(),
-                                1 => "Download 1 season".to_owned(),
-                                n => format!("Download {n} seasons"),
+                    // One fixed-height row so every control shares a centre line and
+                    // the panel margin is the only padding above and below it.
+                    let size = egui::vec2(ui.available_width(), theme::BUTTON_HEIGHT);
+                    ui.allocate_ui_with_layout(size, Layout::right_to_left(Align::Center), |ui| {
+                        let enabled = self.folder.is_some() && ticked_count > 0;
+                        let label = match ticked_count {
+                            0 => "Download".to_owned(),
+                            1 => "Download 1 season".to_owned(),
+                            n => format!("Download {n} seasons"),
+                        };
+                        let download = widgets::primary_button(ui, enabled, &label);
+                        if !enabled {
+                            let hint = if self.folder.is_none() {
+                                "Choose a folder to continue"
+                            } else {
+                                "Select at least one season"
                             };
-                            start = widgets::primary_button(ui, enabled, &label).clicked();
-                            if !enabled {
-                                let hint = if self.folder.is_none() {
-                                    "Choose a folder to continue"
-                                } else {
-                                    "Select at least one season"
-                                };
-                                ui.label(RichText::new(hint).weak());
-                            }
+                            download.on_disabled_hover_text(hint);
+                        } else if download.clicked() {
+                            start = true;
+                        }
+                        choose =
+                            widgets::secondary_button(ui, !self.choosing_folder, "Choose folder…")
+                                .clicked();
+                        ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                            let folder = self
+                                .folder
+                                .as_ref()
+                                .map(|path| path.display().to_string())
+                                .unwrap_or_else(|| "no folder chosen".into());
+                            ui.add(egui::Label::new(RichText::new("Save to").weak()));
+                            ui.add(egui::Label::new(&folder).truncate())
+                                .on_hover_text(&folder);
                         });
                     });
                 });

@@ -12,6 +12,8 @@ pub const SPACE_SM: f32 = 8.0;
 pub const SPACE_MD: f32 = 12.0;
 pub const SPACE_LG: f32 = 16.0;
 pub const ROW_HEIGHT: f32 = 44.0;
+/// Height of footer action buttons, shared so primary and secondary line up.
+pub const BUTTON_HEIGHT: f32 = 40.0;
 
 pub struct Palette {
     pub bg: Color32,
