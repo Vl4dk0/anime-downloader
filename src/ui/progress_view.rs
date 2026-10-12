@@ -57,7 +57,11 @@ impl App {
         let done = count(|s| matches!(s, FileState::Done));
         let skipped = count(|s| matches!(s, FileState::Skipped));
         let failed = count(|s| matches!(s, FileState::Failed { .. }));
-        let active = count(|s| matches!(s, FileState::Active(_)));
+        let active = if self.job.finished {
+            0
+        } else {
+            count(|s| matches!(s, FileState::Active(_)))
+        };
         let completed = done + skipped + failed;
         let fraction = if self.job.total > 0 {
             completed as f32 / self.job.total as f32
@@ -126,8 +130,13 @@ impl App {
                         back = widgets::secondary_button(ui, true, "Back to catalog").clicked();
                         open = widgets::primary_button(ui, !self.opening_folder, "Open folder")
                             .clicked();
-                        if failed > 0 {
-                            retry = widgets::secondary_button(ui, true, "Retry failed").clicked();
+                        if failed > 0 || self.job.cancelled {
+                            let label = if self.job.cancelled {
+                                "Resume"
+                            } else {
+                                "Retry failed"
+                            };
+                            retry = widgets::secondary_button(ui, true, label).clicked();
                         }
                     });
                 });
@@ -136,7 +145,9 @@ impl App {
             .frame(theme::body_frame(ctx))
             .show(ctx, |ui| {
                 if active == 0 && failed == 0 {
-                    let text = if self.job.finished {
+                    let text = if self.job.finished && self.job.cancelled {
+                        "Partial downloads are kept for resuming."
+                    } else if self.job.finished {
                         "No files were downloaded."
                     } else {
                         "Discovering episodes…"
@@ -149,10 +160,10 @@ impl App {
                     .show(ui, |ui| {
                         if active > 0 {
                             table_header(ui);
-                        }
-                        for state in self.job.files.values() {
-                            if let FileState::Active(file) = state {
-                                active_row(ui, file);
+                            for state in self.job.files.values() {
+                                if let FileState::Active(file) = state {
+                                    active_row(ui, file);
+                                }
                             }
                         }
                         if failed > 0 {

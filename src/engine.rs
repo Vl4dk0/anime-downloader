@@ -67,7 +67,7 @@ pub enum Event {
         name: String,
         error: String,
     },
-    // A recovered listing is replaced by its episodes, rather than counted as a file.
+    // Retried runs discard old rows; recovered listings are replaced by their episodes.
     FileRemoved {
         id: usize,
     },
@@ -114,11 +114,7 @@ async fn run(http: Http, mut requests: async_mpsc::UnboundedReceiver<Request>, s
                 }
             } => {
                 job = None;
-                match result {
-                    Ok(batch) => completed = Some(batch),
-                    Err(error) => sink.send(Event::FileFailed { id: usize::MAX, name: "Download job".into(), error: format!("background task failed: {error}") }),
-                }
-                sink.send(Event::Finished);
+                completed = finish_job(result, &sink);
             }
             Some(result) = background.join_next(), if !background.is_empty() => {
                 if let Err(error) = result { tracing::error!(%error, "background request failed"); }
@@ -168,7 +164,13 @@ async fn run(http: Http, mut requests: async_mpsc::UnboundedReceiver<Request>, s
                             job = Some(tokio::spawn(run_batch(http.clone(), batch, job_cancel.clone(), sink.clone())));
                         }
                     }
-                    Request::Cancel => job_cancel.cancel(),
+                    Request::Cancel => {
+                        job_cancel.cancel();
+                        // Reclaim the batch before accepting another start or retry request.
+                        if let Some(task) = job.take() {
+                            completed = finish_job(task.await, &sink);
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -181,6 +183,25 @@ async fn run(http: Http, mut requests: async_mpsc::UnboundedReceiver<Request>, s
     if let Some(job) = job {
         let _ = job.await;
     }
+}
+
+fn finish_job(
+    result: std::result::Result<Batch, tokio::task::JoinError>,
+    sink: &Sink,
+) -> Option<Batch> {
+    let batch = match result {
+        Ok(batch) => Some(batch),
+        Err(error) => {
+            sink.send(Event::FileFailed {
+                id: usize::MAX,
+                name: "Download job".into(),
+                error: format!("background task failed: {error}"),
+            });
+            None
+        }
+    };
+    sink.send(Event::Finished);
+    batch
 }
 
 #[derive(Clone)]
@@ -198,7 +219,6 @@ struct Batch {
     directory: Result<PathBuf>,
     pending: Vec<Work>,
     next_id: usize,
-    total: usize,
     seen: HashSet<Url>,
     destinations: HashMap<String, Url>,
 }
@@ -217,7 +237,6 @@ impl Batch {
         Self {
             directory,
             next_id: pending.len(),
-            total: pending.len(),
             pending,
             seen: HashSet::new(),
             destinations: HashMap::new(),
@@ -235,11 +254,22 @@ impl Batch {
 }
 
 async fn run_batch(http: Http, mut batch: Batch, cancel: CancellationToken, sink: Sink) -> Batch {
-    let pending = std::mem::take(&mut batch.pending);
-    batch.total = batch.total.saturating_sub(pending.len());
-    for work in &pending {
-        sink.send(Event::FileRemoved { id: work.id });
+    for id in 0..batch.next_id {
+        sink.send(Event::FileRemoved { id });
     }
+    sink.send(Event::JobQueued {
+        total: batch.pending.len(),
+    });
+    // Pending owns every unfinished item, so dropping any stage preserves retry work.
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => {},
+        _ = process_batch(&http, &mut batch, &cancel, &sink) => {},
+    }
+    batch
+}
+
+async fn process_batch(http: &Http, batch: &mut Batch, cancel: &CancellationToken, sink: &Sink) {
     let directory_result = async {
         let directory = batch
             .directory
@@ -254,69 +284,73 @@ async fn run_batch(http: Http, mut batch: Batch, cancel: CancellationToken, sink
     let directory = match directory_result {
         Ok(directory) => directory,
         Err(error) => {
-            for work in pending {
-                fail(&sink, &work, format!("{error:#}"));
-                batch.pending.push(work);
-                batch.total += 1;
+            if !cancel.is_cancelled() {
+                for work in &batch.pending {
+                    fail(sink, work, format!("{error:#}"));
+                }
             }
-            sink.send(Event::JobQueued { total: batch.total });
-            return batch;
+            return;
         }
     };
-    let (listings, mut episodes): (Vec<_>, Vec<_>) = pending
+    let (listings, mut episodes): (Vec<_>, Vec<_>) = batch
+        .pending
+        .clone()
         .into_iter()
         .partition(|work| matches!(work.kind, WorkKind::Listing(_)));
-    let mut discovery = stream::iter(listings.into_iter().map(|work| {
-        let http = &http;
-        let cancel = &cancel;
-        async move {
-            let result = match &work.kind {
-                WorkKind::Listing(url) => site::series::episodes(http, url, cancel).await,
-                WorkKind::Episode(_) => Err(anyhow::anyhow!("expected a listing task")),
-            };
-            (work, result)
-        }
+    let mut discovery = stream::iter(listings.into_iter().map(|work| async move {
+        let result = match &work.kind {
+            WorkKind::Listing(url) => site::series::episodes(http, url, cancel).await,
+            WorkKind::Episode(_) => Err(anyhow::anyhow!("expected a listing task")),
+        };
+        (work, result)
     }))
     .buffer_unordered(site::DISCOVERY_CONCURRENCY);
+    let mut listing_failures = Vec::new();
     while let Some((work, result)) = discovery.next().await {
+        if cancel.is_cancelled() {
+            return;
+        }
         match result {
             Ok(found) => {
+                batch.pending.retain(|pending| pending.id != work.id);
                 for episode in found.episodes {
                     if batch.seen.insert(episode.url.clone()) {
-                        episodes.push(batch.work(episode.name.clone(), WorkKind::Episode(episode)));
+                        let work = batch.work(episode.name.clone(), WorkKind::Episode(episode));
+                        batch.pending.push(work.clone());
+                        episodes.push(work);
                     }
                 }
                 for (url, error) in found.failed_pages {
                     let work = batch.work(format!("Listing: {url}"), WorkKind::Listing(url));
-                    fail(&sink, &work, error);
-                    batch.pending.push(work);
-                    batch.total += 1;
+                    batch.pending.push(work.clone());
+                    listing_failures.push((work, error));
                 }
             }
             Err(error) => {
-                fail(&sink, &work, format!("{error:#}"));
-                batch.pending.push(work);
-                batch.total += 1;
+                listing_failures.push((work, format!("{error:#}")));
             }
         }
     }
-    batch.total += episodes.len();
-    sink.send(Event::JobQueued { total: batch.total });
-    let mut resolved = stream::iter(episodes.into_iter().map(|work| {
-        let http = &http;
-        let cancel = &cancel;
-        async move {
-            let result = match &work.kind {
-                WorkKind::Episode(entry) => site::series::resolve(http, &entry.url, cancel).await,
-                WorkKind::Listing(_) => Err(anyhow::anyhow!("expected an episode task")),
-            };
-            (work, result)
-        }
+    sink.send(Event::JobQueued {
+        total: batch.pending.len(),
+    });
+    for (work, error) in listing_failures {
+        fail(sink, &work, error);
+    }
+    let mut resolved = stream::iter(episodes.into_iter().map(|work| async move {
+        let result = match &work.kind {
+            WorkKind::Episode(entry) => site::series::resolve(http, &entry.url, cancel).await,
+            WorkKind::Listing(_) => Err(anyhow::anyhow!("expected an episode task")),
+        };
+        (work, result)
     }))
     .buffer_unordered(site::DISCOVERY_CONCURRENCY);
     let mut downloads = Vec::new();
     let mut scheduled = HashSet::new();
     while let Some((work, result)) = resolved.next().await {
+        if cancel.is_cancelled() {
+            return;
+        }
         let result = result.and_then(|url| {
             let raw = url.path_segments().and_then(|mut parts| parts.next_back()).context("video URL has no filename")?;
             let name = download::safe_name(raw)?;
@@ -325,63 +359,68 @@ async fn run_batch(http: Http, mut batch: Batch, cancel: CancellationToken, sink
             if let Some(previous) = batch.destinations.get(&key) {
                 anyhow::ensure!(previous == &url, "different videos share filename {}; cannot store both in the flat output folder", dest.display());
             }
-            anyhow::ensure!(scheduled.insert(key.clone()), "multiple episodes share output file {}; cannot download them concurrently", dest.display());
+            // One pending transfer remains responsible for retries of a shared video.
+            if !scheduled.insert(key.clone()) {
+                return Ok(None);
+            }
             batch.destinations.insert(key, url.clone());
-            Ok((url, dest))
+            Ok(Some((url, dest)))
         });
         match result {
-            Ok((url, dest)) => downloads.push((work, url, dest)),
+            Ok(Some((url, dest))) => downloads.push((work, url, dest)),
+            Ok(None) => {
+                sink.send(Event::FileSkipped { id: work.id });
+                batch.pending.retain(|pending| pending.id != work.id);
+            }
             Err(error) => {
-                fail(&sink, &work, format!("{error:#}"));
-                batch.pending.push(work);
+                fail(sink, &work, format!("{error:#}"));
             }
         }
     }
-    let mut transfers = stream::iter(downloads.into_iter().map(|(work, url, dest)| {
-        let http = &http;
-        let cancel = &cancel;
-        let sink = &sink;
-        async move {
-            let name = dest
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_else(|| work.name.clone());
-            let result =
-                download::download(
-                    &http.client,
-                    &url,
-                    &dest,
-                    cancel,
-                    |progress| match progress {
-                        Progress::Started { size, bytes } => {
-                            sink.send(Event::FileStarted {
-                                id: work.id,
-                                name: name.clone(),
-                                size,
-                            });
-                            sink.send(Event::FileProgress { id: work.id, bytes });
-                        }
-                        Progress::Bytes(bytes) => {
-                            sink.send(Event::FileProgress { id: work.id, bytes })
-                        }
-                    },
-                )
-                .await;
-            (work, result)
-        }
+    let mut transfers = stream::iter(downloads.into_iter().map(|(work, url, dest)| async move {
+        let name = dest
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| work.name.clone());
+        let result = download::download(
+            &http.client,
+            &url,
+            &dest,
+            cancel,
+            |progress| match progress {
+                Progress::Started { size, bytes } => {
+                    sink.send(Event::FileStarted {
+                        id: work.id,
+                        name: name.clone(),
+                        size,
+                    });
+                    sink.send(Event::FileProgress { id: work.id, bytes });
+                }
+                Progress::Bytes(bytes) => sink.send(Event::FileProgress { id: work.id, bytes }),
+            },
+        )
+        .await;
+        (work, result)
     }))
     .buffer_unordered(site::DOWNLOAD_CONCURRENCY);
     while let Some((work, result)) = transfers.next().await {
+        if cancel.is_cancelled() {
+            return;
+        }
         match result {
-            Ok(Outcome::Downloaded) => sink.send(Event::FileDone { id: work.id }),
-            Ok(Outcome::Skipped) => sink.send(Event::FileSkipped { id: work.id }),
+            Ok(outcome) => {
+                match outcome {
+                    Outcome::Downloaded => sink.send(Event::FileDone { id: work.id }),
+                    Outcome::Skipped => sink.send(Event::FileSkipped { id: work.id }),
+                    Outcome::Cancelled => return,
+                }
+                batch.pending.retain(|pending| pending.id != work.id);
+            }
             Err(error) => {
-                fail(&sink, &work, format!("{error:#}"));
-                batch.pending.push(work);
+                fail(sink, &work, format!("{error:#}"));
             }
         }
     }
-    batch
 }
 fn fail(sink: &Sink, work: &Work, error: String) {
     sink.send(Event::FileFailed {

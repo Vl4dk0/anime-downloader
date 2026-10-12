@@ -66,6 +66,7 @@ pub enum Progress {
 pub enum Outcome {
     Downloaded,
     Skipped,
+    Cancelled,
 }
 
 pub async fn download(
@@ -74,6 +75,21 @@ pub async fn download(
     dest: &Path,
     cancel: &CancellationToken,
     report: impl Fn(Progress),
+) -> Result<Outcome> {
+    // Keep cancellation distinct from errors, including during filesystem work or backoff.
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => Ok(Outcome::Cancelled),
+        result = download_inner(client, url, dest, cancel, &report) => result,
+    }
+}
+
+async fn download_inner(
+    client: &Client,
+    url: &Url,
+    dest: &Path,
+    cancel: &CancellationToken,
+    report: &impl Fn(Progress),
 ) -> Result<Outcome> {
     match tokio::fs::metadata(dest).await {
         Ok(meta) if meta.is_file() && meta.len() > 0 => return Ok(Outcome::Skipped),
@@ -85,12 +101,7 @@ pub async fn download(
     }
     let mut last_error = None;
     for attempt in 1..=RETRIES {
-        // Cancellation drops the transfer after any completed writes; the .part remains.
-        let result = tokio::select! {
-            biased;
-            _ = cancel.cancelled() => return Err(anyhow!("cancelled")),
-            result = download_once(client, url, dest, &report) => result,
-        };
+        let result = download_once(client, url, dest, report).await;
         match result {
             Ok(()) => return Ok(Outcome::Downloaded),
             Err(error) => {
