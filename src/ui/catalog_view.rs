@@ -4,7 +4,7 @@ use super::{
 };
 use anime_downloader::{
     engine::Request,
-    site::{catalog::SECTIONS, Series},
+    site::{catalog::SECTIONS, Kind, Series},
 };
 use eframe::egui::{self, vec2, Align, Layout, Margin, RichText, Sense, Stroke};
 
@@ -15,7 +15,6 @@ impl App {
             .frame(theme::header_frame(ctx))
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.heading("Catalog");
                     if ready {
                         ui.label(RichText::new(format!("{} series", self.catalog.len())).weak());
                     }
@@ -29,9 +28,7 @@ impl App {
                 if !ready {
                     return;
                 }
-                for warning in &self.warnings {
-                    widgets::notice(ui, "Warning", warning, None);
-                }
+                section_summary(ui, &self.section_states());
                 ui.add(
                     egui::TextEdit::singleline(&mut self.search)
                         .hint_text("Search anime…")
@@ -45,7 +42,7 @@ impl App {
             .frame(theme::body_frame(ctx))
             .show(ctx, |ui| {
                 if self.catalog_loading {
-                    return widgets::status(ui, true, "Loading catalog…");
+                    return loading_status(ui, &self.section_states());
                 }
                 if let Some(error) = &self.catalog_error {
                     retry = padded_notice(ui, error);
@@ -79,6 +76,82 @@ impl App {
             self.select_series(series);
         }
     }
+}
+
+/// Why: sections load independently on the site, so the UI models each one on
+/// its own; per-section engine events only need to feed `section_states`.
+enum SectionState {
+    Loading,
+    Loaded(usize),
+    Unavailable(String),
+}
+
+const SOURCE_HOST: &str = "cartoonsarea.cc";
+
+fn section_name(kind: Kind) -> &'static str {
+    match kind {
+        Kind::Sub => "Japanese with English subtitles",
+        Kind::Dub => "English dub",
+    }
+}
+
+impl SectionState {
+    fn describe(&self) -> String {
+        match self {
+            Self::Loading => format!("loading anime list from {SOURCE_HOST}…"),
+            Self::Loaded(count) => format!("{count} series"),
+            Self::Unavailable(reason) => format!("unavailable: {reason}"),
+        }
+    }
+}
+
+impl App {
+    /// Derived from the whole-catalog result until the engine reports sections
+    /// separately; a section with a warning failed, the rest loaded.
+    fn section_states(&self) -> Vec<(Kind, SectionState)> {
+        SECTIONS
+            .iter()
+            .map(|(kind, label, _)| {
+                let state = if self.catalog_loading {
+                    SectionState::Loading
+                } else if let Some(warning) = self.warnings.iter().find(|w| w.starts_with(label)) {
+                    let reason = warning
+                        .split_once("unavailable: ")
+                        .map_or(warning.as_str(), |(_, reason)| reason);
+                    SectionState::Unavailable(reason.to_owned())
+                } else {
+                    SectionState::Loaded(self.catalog.iter().filter(|s| s.kind == *kind).count())
+                };
+                (*kind, state)
+            })
+            .collect()
+    }
+}
+
+fn loading_status(ui: &mut egui::Ui, states: &[(Kind, SectionState)]) {
+    ui.vertical_centered(|ui| {
+        ui.add_space(ui.available_height() * 0.3);
+        ui.spinner();
+        ui.add_space(SPACE_SM);
+        for (kind, state) in states {
+            ui.label(
+                RichText::new(format!("{}: {}", section_name(*kind), state.describe())).weak(),
+            );
+        }
+    });
+}
+
+fn section_summary(ui: &mut egui::Ui, states: &[(Kind, SectionState)]) {
+    ui.horizontal_wrapped(|ui| {
+        for (kind, state) in states {
+            let text = format!("{}: {}", section_name(*kind), state.describe());
+            if matches!(state, SectionState::Unavailable(_)) {
+                ui.label(RichText::new(text).strong());
+            } else {
+                ui.label(RichText::new(text).weak());
+            }
+        }
+    });
 }
 
 /// Error with a retry action, inset to line up with the screen padding.
