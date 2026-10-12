@@ -17,7 +17,7 @@ impl App {
         egui::TopBottomPanel::top("header")
             .frame(theme::header_frame(ctx))
             .show(ctx, |ui| {
-                back = widgets::small_button(ui, "← Back").clicked();
+                back = widgets::small_button(ui, "Back").clicked();
                 ui.horizontal(|ui| {
                     widgets::badge(ui, selection.series.kind);
                     ui.add(
@@ -66,12 +66,6 @@ impl App {
                 .frame(theme::header_frame(ctx))
                 .show(ctx, |ui| {
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new("Save to").weak());
-                        let text = self
-                            .folder
-                            .as_ref()
-                            .map(|path| path.display().to_string())
-                            .unwrap_or_else(|| "No folder chosen".into());
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             choose = widgets::secondary_button(
                                 ui,
@@ -79,25 +73,34 @@ impl App {
                                 "Choose folder…",
                             )
                             .clicked();
-                            ui.add(egui::Label::new(text).truncate());
+                            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                                let folder = self
+                                    .folder
+                                    .as_ref()
+                                    .map(|path| path.display().to_string())
+                                    .unwrap_or_else(|| "no folder chosen".into());
+                                ui.add(egui::Label::new(format!("Save to {folder}")).truncate());
+                            });
                         });
                     });
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        let enabled = self.folder.is_some() && ticked_count > 0;
-                        let label = match ticked_count {
-                            0 => "Download".to_owned(),
-                            1 => "Download 1 season".to_owned(),
-                            n => format!("Download {n} seasons"),
-                        };
-                        start = widgets::primary_button(ui, enabled, &label).clicked();
-                        if !enabled {
-                            let hint = if self.folder.is_none() {
-                                "Choose a folder to continue"
-                            } else {
-                                "Select at least one season"
+                    ui.horizontal(|ui| {
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            let enabled = self.folder.is_some() && ticked_count > 0;
+                            let label = match ticked_count {
+                                0 => "Download".to_owned(),
+                                1 => "Download 1 season".to_owned(),
+                                n => format!("Download {n} seasons"),
                             };
-                            ui.label(RichText::new(hint).weak());
-                        }
+                            start = widgets::primary_button(ui, enabled, &label).clicked();
+                            if !enabled {
+                                let hint = if self.folder.is_none() {
+                                    "Choose a folder to continue"
+                                } else {
+                                    "Select at least one season"
+                                };
+                                ui.label(RichText::new(hint).weak());
+                            }
+                        });
                     });
                 });
         }

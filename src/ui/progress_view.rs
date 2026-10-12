@@ -116,18 +116,20 @@ impl App {
         egui::TopBottomPanel::bottom("footer")
             .frame(theme::header_frame(ctx))
             .show(ctx, |ui| {
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if !self.job.finished {
-                        cancel =
-                            widgets::secondary_button(ui, !self.job.cancelled, "Cancel").clicked();
-                        return;
-                    }
-                    back = widgets::secondary_button(ui, true, "Back to catalog").clicked();
-                    open =
-                        widgets::primary_button(ui, !self.opening_folder, "Open folder").clicked();
-                    if failed > 0 {
-                        retry = widgets::secondary_button(ui, true, "Retry failed").clicked();
-                    }
+                ui.horizontal(|ui| {
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if !self.job.finished {
+                            cancel = widgets::secondary_button(ui, !self.job.cancelled, "Cancel")
+                                .clicked();
+                            return;
+                        }
+                        back = widgets::secondary_button(ui, true, "Back to catalog").clicked();
+                        open = widgets::primary_button(ui, !self.opening_folder, "Open folder")
+                            .clicked();
+                        if failed > 0 {
+                            retry = widgets::secondary_button(ui, true, "Retry failed").clicked();
+                        }
+                    });
                 });
             });
         egui::CentralPanel::default()
@@ -154,7 +156,7 @@ impl App {
                             }
                         }
                         if failed > 0 {
-                            failure_rows(ui, &self.job.files);
+                            failure_rows(ui, &self.job.files, failed);
                         }
                     });
             });
@@ -254,11 +256,11 @@ fn active_row(ui: &mut Ui, file: &super::ActiveFile) {
 
 /// Failures stay visible instead of collapsed: they need the owner's decision
 /// (retry or check the site), so hiding them would hide the outcome.
-fn failure_rows(ui: &mut Ui, files: &BTreeMap<usize, FileState>) {
+fn failure_rows(ui: &mut Ui, files: &BTreeMap<usize, FileState>, count: usize) {
     ui.add_space(SPACE_MD);
     ui.horizontal(|ui| {
         ui.add_space(SPACE_LG);
-        ui.label(RichText::new("Failed").strong());
+        ui.label(RichText::new(format!("Failed ({count})")).strong());
     });
     ui.add_space(SPACE_MD);
     for state in files.values() {
