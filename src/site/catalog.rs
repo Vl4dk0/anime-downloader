@@ -37,14 +37,32 @@ pub async fn load_section(
     let body = fetch_html(client, &root, ATTEMPTS, cancel).await?;
     let letters = html::entries(&body, &root)?;
     let mut results = stream::iter(letters.into_iter().map(|letter| async move {
-        let body = fetch_html(client, &letter.url, ATTEMPTS, cancel).await?;
-        Ok::<_, anyhow::Error>(html::listing(&body, &letter.url))
+        let result = fetch_html(client, &letter.url, ATTEMPTS, cancel)
+            .await
+            .map(|body| html::listing(&body, &letter.url));
+        (letter, result)
     }))
     .buffer_unordered(DISCOVERY_CONCURRENCY);
     let mut series = Vec::new();
     let mut seen = HashSet::new();
-    while let Some(result) = results.next().await {
-        for entry in result? {
+    let mut last_error = None;
+    while let Some((letter, result)) = results.next().await {
+        anyhow::ensure!(!cancel.is_cancelled(), "cancelled");
+        let entries = match result {
+            Ok(entries) => entries,
+            Err(error) => {
+                tracing::warn!(
+                    ?kind,
+                    letter = %letter.name,
+                    url = %letter.url,
+                    error = format!("{error:#}"),
+                    "catalog letter unavailable"
+                );
+                last_error = Some(error);
+                continue;
+            }
+        };
+        for entry in entries {
             if seen.insert(entry.url.clone()) {
                 series.push(Series {
                     title: entry.name,
@@ -55,6 +73,9 @@ pub async fn load_section(
         }
     }
     if series.is_empty() {
+        if let Some(error) = last_error {
+            return Err(error).context("no series collected from catalog letters");
+        }
         bail!("no series found");
     }
     Ok(series)
