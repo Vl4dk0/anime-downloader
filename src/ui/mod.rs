@@ -196,7 +196,10 @@ impl App {
                 Event::FileRemoved { id } => {
                     self.job.files.remove(&id);
                 }
-                Event::Finished => self.job.finished = true,
+                Event::Finished { cancelled } => {
+                    self.job.finished = true;
+                    self.job.cancelled = cancelled;
+                }
             }
         }
         while let Ok(event) = self.local_events.try_recv() {

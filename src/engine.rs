@@ -75,7 +75,9 @@ pub enum Event {
     FileRemoved {
         id: usize,
     },
-    Finished,
+    Finished {
+        cancelled: bool,
+    },
 }
 
 #[derive(Clone)]
@@ -107,7 +109,7 @@ async fn run(http: Http, mut requests: async_mpsc::UnboundedReceiver<Request>, s
     let mut catalog_cancel = CancellationToken::new();
     let mut seasons_cancel = CancellationToken::new();
     let mut job_cancel = CancellationToken::new();
-    let mut job: Option<JoinHandle<Batch>> = None;
+    let mut job: Option<JoinHandle<(Batch, bool)>> = None;
     let mut completed: Option<Batch> = None;
     loop {
         tokio::select! {
@@ -161,9 +163,9 @@ async fn run(http: Http, mut requests: async_mpsc::UnboundedReceiver<Request>, s
                         }
                     }
                     Request::Cancel => {
-                        job_cancel.cancel();
                         // Reclaim the batch before accepting another start or retry request.
                         if let Some(task) = job.take() {
+                            job_cancel.cancel();
                             completed = finish_job(task.await, &sink);
                         }
                     }
@@ -209,21 +211,21 @@ async fn load_section(
 }
 
 fn finish_job(
-    result: std::result::Result<Batch, tokio::task::JoinError>,
+    result: std::result::Result<(Batch, bool), tokio::task::JoinError>,
     sink: &Sink,
 ) -> Option<Batch> {
-    let batch = match result {
-        Ok(batch) => Some(batch),
+    let (batch, cancelled) = match result {
+        Ok((batch, cancelled)) => (Some(batch), cancelled),
         Err(error) => {
             sink.send(Event::FileFailed {
                 id: usize::MAX,
                 name: "Download job".into(),
                 error: format!("background task failed: {error}"),
             });
-            None
+            (None, false)
         }
     };
-    sink.send(Event::Finished);
+    sink.send(Event::Finished { cancelled });
     batch
 }
 
@@ -276,7 +278,12 @@ impl Batch {
     }
 }
 
-async fn run_batch(http: Http, mut batch: Batch, cancel: CancellationToken, sink: Sink) -> Batch {
+async fn run_batch(
+    http: Http,
+    mut batch: Batch,
+    cancel: CancellationToken,
+    sink: Sink,
+) -> (Batch, bool) {
     for id in 0..batch.next_id {
         sink.send(Event::FileRemoved { id });
     }
@@ -284,15 +291,21 @@ async fn run_batch(http: Http, mut batch: Batch, cancel: CancellationToken, sink
         total: batch.pending.len(),
     });
     // Pending owns every unfinished item, so dropping any stage preserves retry work.
-    tokio::select! {
+    // Capture the outcome here; a late Cancel may reach an already completed task.
+    let cancelled = tokio::select! {
         biased;
-        _ = cancel.cancelled() => {},
-        _ = process_batch(&http, &mut batch, &cancel, &sink) => {},
-    }
-    batch
+        _ = cancel.cancelled() => true,
+        cancelled = process_batch(&http, &mut batch, &cancel, &sink) => cancelled,
+    };
+    (batch, cancelled)
 }
 
-async fn process_batch(http: &Http, batch: &mut Batch, cancel: &CancellationToken, sink: &Sink) {
+async fn process_batch(
+    http: &Http,
+    batch: &mut Batch,
+    cancel: &CancellationToken,
+    sink: &Sink,
+) -> bool {
     let directory_result = async {
         let directory = batch
             .directory
@@ -307,12 +320,13 @@ async fn process_batch(http: &Http, batch: &mut Batch, cancel: &CancellationToke
     let directory = match directory_result {
         Ok(directory) => directory,
         Err(error) => {
-            if !cancel.is_cancelled() {
-                for work in &batch.pending {
-                    fail(sink, work, format!("{error:#}"));
-                }
+            if cancel.is_cancelled() {
+                return true;
             }
-            return;
+            for work in &batch.pending {
+                fail(sink, work, format!("{error:#}"));
+            }
+            return false;
         }
     };
     let (listings, mut episodes): (Vec<_>, Vec<_>) = batch
@@ -331,7 +345,7 @@ async fn process_batch(http: &Http, batch: &mut Batch, cancel: &CancellationToke
     let mut listing_failures = Vec::new();
     while let Some((work, result)) = discovery.next().await {
         if cancel.is_cancelled() {
-            return;
+            return true;
         }
         match result {
             Ok(found) => {
@@ -372,7 +386,7 @@ async fn process_batch(http: &Http, batch: &mut Batch, cancel: &CancellationToke
     let mut scheduled = HashSet::new();
     while let Some((work, result)) = resolved.next().await {
         if cancel.is_cancelled() {
-            return;
+            return true;
         }
         let result = result.and_then(|url| {
             let raw = url.path_segments().and_then(|mut parts| parts.next_back()).context("video URL has no filename")?;
@@ -428,14 +442,14 @@ async fn process_batch(http: &Http, batch: &mut Batch, cancel: &CancellationToke
     .buffer_unordered(site::DOWNLOAD_CONCURRENCY);
     while let Some((work, result)) = transfers.next().await {
         if cancel.is_cancelled() {
-            return;
+            return true;
         }
         match result {
             Ok(outcome) => {
                 match outcome {
                     Outcome::Downloaded => sink.send(Event::FileDone { id: work.id }),
                     Outcome::Skipped => sink.send(Event::FileSkipped { id: work.id }),
-                    Outcome::Cancelled => return,
+                    Outcome::Cancelled => return true,
                 }
                 batch.pending.retain(|pending| pending.id != work.id);
             }
@@ -444,6 +458,7 @@ async fn process_batch(http: &Http, batch: &mut Batch, cancel: &CancellationToke
             }
         }
     }
+    false
 }
 fn fail(sink: &Sink, work: &Work, error: String) {
     sink.send(Event::FileFailed {

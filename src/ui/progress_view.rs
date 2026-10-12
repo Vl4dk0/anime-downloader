@@ -123,8 +123,7 @@ impl App {
                 ui.horizontal(|ui| {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if !self.job.finished {
-                            cancel = widgets::secondary_button(ui, !self.job.cancelled, "Cancel")
-                                .clicked();
+                            cancel = widgets::secondary_button(ui, true, "Cancel").clicked();
                             return;
                         }
                         back = widgets::secondary_button(ui, true, "Back to catalog").clicked();
@@ -172,7 +171,6 @@ impl App {
                     });
             });
         if cancel {
-            self.job.cancelled = true;
             self.send(Request::Cancel);
         }
         if retry {
