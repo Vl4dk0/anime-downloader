@@ -1,6 +1,8 @@
 mod catalog_view;
 mod progress_view;
 mod series_view;
+mod theme;
+mod widgets;
 
 use anime_downloader::{
     engine::{self, Event, Request},
@@ -53,6 +55,7 @@ enum LocalEvent {
     DefaultFolder(Option<PathBuf>),
     Folder(Option<PathBuf>),
     OpenResult(Result<(), String>),
+    LinkFailed(String),
 }
 
 pub struct App {
@@ -72,10 +75,12 @@ pub struct App {
     choosing_folder: bool,
     opening_folder: bool,
     error: Option<String>,
+    pending_link: Option<String>,
     job: Job,
 }
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, runtime: Runtime, http: Http) -> Self {
+        theme::apply(&cc.egui_ctx);
         let (requests, events) = engine::start(http, runtime.handle(), cc.egui_ctx.clone());
         let (local_sender, local_events) = mpsc::channel();
         let sender = local_sender.clone();
@@ -102,6 +107,7 @@ impl App {
             choosing_folder: false,
             opening_folder: false,
             error: None,
+            pending_link: None,
             job: Job::default(),
         };
         app.send(Request::LoadCatalog);
@@ -212,6 +218,7 @@ impl App {
                         self.folder = folder;
                     }
                 }
+                LocalEvent::LinkFailed(error) => self.error = Some(error),
                 LocalEvent::OpenResult(result) => {
                     self.opening_folder = false;
                     if let Err(error) = result {
@@ -222,21 +229,50 @@ impl App {
         }
     }
 }
+impl App {
+    /// Opens in the system browser off the UI thread; egui's own opener is not
+    /// compiled in with the features this app uses.
+    fn open_link(&self, ctx: &egui::Context, url: String) {
+        let Some(runtime) = &self.runtime else {
+            return;
+        };
+        let sender = self.local_sender.clone();
+        let context = ctx.clone();
+        runtime.spawn_blocking(move || {
+            if let Err(error) = opener::open(&url) {
+                let _ = sender.send(LocalEvent::LinkFailed(format!("Open {url}: {error}")));
+                context.request_repaint();
+            }
+        });
+    }
+
+    fn error_banner(&mut self, ctx: &egui::Context) {
+        let Some(error) = self.error.clone() else {
+            return;
+        };
+        let mut dismissed = false;
+        egui::TopBottomPanel::top("error")
+            .frame(theme::header_frame(ctx))
+            .show(ctx, |ui| {
+                dismissed = widgets::notice(ui, "Error", &error, Some("Dismiss"));
+            });
+        if dismissed {
+            self.error = None;
+        }
+    }
+}
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll();
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("Anime Downloader");
-            ui.separator();
-            if let Some(error) = &self.error {
-                ui.colored_label(egui::Color32::LIGHT_RED, error);
-            }
-            match self.screen {
-                Screen::Catalog => self.catalog_view(ui),
-                Screen::Series => self.series_view(ui, ctx),
-                Screen::Progress => self.progress_view(ui, ctx),
-            }
-        });
+        self.error_banner(ctx);
+        match self.screen {
+            Screen::Catalog => self.catalog_view(ctx),
+            Screen::Series => self.series_view(ctx),
+            Screen::Progress => self.progress_view(ctx),
+        }
+        if let Some(url) = self.pending_link.take() {
+            self.open_link(ctx, url);
+        }
         if self.screen == Screen::Progress && !self.job.finished {
             ctx.request_repaint_after(Duration::from_millis(250));
         }
