@@ -9,7 +9,8 @@ use std::collections::HashSet;
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
-const SECTIONS: [(Kind, &str, &str); 2] = [
+/// Public so the UI can link to the pages the catalog was crawled from.
+pub const SECTIONS: [(Kind, &str, &str); 2] = [
     (
         Kind::Sub,
         "Japanese sub",
