@@ -56,7 +56,7 @@ fn badge_size(galley: &egui::Galley) -> egui::Vec2 {
     galley.size() + vec2(12.0, 4.0)
 }
 
-/// Inline SUB/DUB marker for headers.
+/// Text identifies the source without depending on colour in the monochrome theme.
 pub fn badge(ui: &mut Ui, kind: Kind) {
     let galley = badge_galley(ui, kind);
     let (rect, _) = ui.allocate_exact_size(badge_size(&galley), Sense::hover());
@@ -76,7 +76,7 @@ pub fn badge_at(ui: &Ui, left_center: Pos2, kind: Kind) -> f32 {
     size.x
 }
 
-/// Single-line text clipped with an ellipsis at `width`.
+/// Painted rows need a bounded galley so long titles leave room for other columns.
 pub fn truncated(ui: &Ui, text: &str, width: f32) -> std::sync::Arc<egui::Galley> {
     let p = Palette::of(ui.visuals());
     let mut job = LayoutJob::single_section(
@@ -150,7 +150,6 @@ pub fn notice(ui: &mut Ui, lead: &str, text: &str, action: Option<&str>) -> bool
     clicked
 }
 
-/// Centered placeholder for loading, empty and failed states.
 pub fn status(ui: &mut Ui, spinner: bool, text: &str) {
     ui.vertical_centered(|ui| {
         ui.add_space(ui.available_height() * 0.3);
@@ -161,7 +160,7 @@ pub fn status(ui: &mut Ui, spinner: bool, text: &str) {
     });
 }
 
-/// Full-width row with a bottom hairline; returns the rect and its response.
+/// Shared hit areas and separators keep painted rows consistent across screens.
 pub fn row(ui: &mut Ui, height: f32, sense: Sense) -> (Rect, Response) {
     let p = Palette::of(ui.visuals());
     let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), height), sense);
