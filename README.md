@@ -36,6 +36,9 @@ cargo run --release
 ```
 
 The executable is `target/release/anime-downloader` (`.exe` on Windows).
+The app icon lives in `assets/` (`icon.png` master, `icon.icns` for the macOS
+bundle, `icon.ico` embedded in the Windows exe by `build.rs`, `icon-256.png`
+embedded for the window/Dock icon).
 Tags beginning with `v` build Windows and both macOS releases in GitHub Actions.
 A manual Release workflow run on a branch builds downloadable workflow artifacts;
 running it on a `v` tag also publishes that tag's release.

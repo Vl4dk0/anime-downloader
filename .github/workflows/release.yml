@@ -56,7 +56,8 @@ jobs:
           RELEASE_ASSET: ${{ matrix.asset }}
         run: |
           app='dist/Anime Downloader.app'
-          mkdir -p "$app/Contents/MacOS"
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+          cp assets/icon.icns "$app/Contents/Resources/icon.icns"
           cp "target/$BUILD_TARGET/release/anime-downloader" "$app/Contents/MacOS/anime-downloader"
           chmod +x "$app/Contents/MacOS/anime-downloader"
           version=$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json, sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "anime-downloader"))')
@@ -67,6 +68,7 @@ jobs:
             <key>CFBundleName</key><string>Anime Downloader</string>
             <key>CFBundleDisplayName</key><string>Anime Downloader</string>
             <key>CFBundleExecutable</key><string>anime-downloader</string>
+            <key>CFBundleIconFile</key><string>icon</string>
             <key>CFBundleIdentifier</key><string>cc.cartoonsarea.anime-downloader</string>
             <key>CFBundlePackageType</key><string>APPL</string>
             <key>CFBundleShortVersionString</key><string>$version</string>

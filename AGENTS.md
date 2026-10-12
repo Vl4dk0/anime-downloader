@@ -20,6 +20,7 @@ design is `docs/superpowers/specs/2026-10-12-gui-app-design.md`.
   listing failures and episode failures both support retry.
 - `src/ui/`: app state, catalog, season selection, and download progress views.
 - `tests/fixtures/`: trimmed real site HTML for deterministic parsing checks.
+- `assets/`: app icon master plus derived `.icns`/`.ico`/256 px PNG (regenerate all from `icon.png` when it changes); `build.rs` embeds the `.ico` on Windows.
 - `.github/workflows/`: Ubuntu/Windows checks and Windows/macOS release builds.
 
 Keep network and filesystem work off the UI thread. Preserve partial downloads
