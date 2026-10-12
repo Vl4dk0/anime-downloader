@@ -76,6 +76,8 @@ jobs:
           </dict></plist>
           EOF
           plutil -lint "$app/Contents/Info.plist"
+          codesign --force --sign - "$app"
+          codesign --verify --strict --verbose=2 "$app"
           ditto -c -k --sequesterRsrc --keepParent "$app" "dist/$RELEASE_ASSET"
       - uses: actions/upload-artifact@v7
         with:
