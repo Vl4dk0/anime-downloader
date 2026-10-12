@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use clap::{Parser, Subcommand};
 use futures::stream::{self, StreamExt};
 use inquire::MultiSelect;
@@ -132,11 +132,12 @@ const SOURCES: &[Source] = &[
 ];
 
 static CONTENT_LINK_SEL: Lazy<Selector> =
-    Lazy::new(|| Selector::parse("div.none div.Singamdasam a[href]").unwrap());
+    Lazy::new(|| Selector::parse("div.directory-list a.directory-item[href]").unwrap());
 static PAGINATION_LINK_SEL: Lazy<Selector> =
-    Lazy::new(|| Selector::parse("ul.pagination a[href]").unwrap());
-static EPISODE_FILE_LINK_SEL: Lazy<Selector> =
-    Lazy::new(|| Selector::parse("div.Box div.Singamdasam table a[href]").unwrap());
+    Lazy::new(|| Selector::parse("a.tab-btn[href]").unwrap());
+static EPISODE_FILE_LINK_SEL: Lazy<Selector> = Lazy::new(|| {
+    Selector::parse("div.directory-list a.directory-item[href$=\".mp4.php\"]").unwrap()
+});
 static DOWNLOAD_LINK_SEL: Lazy<Selector> =
     Lazy::new(|| Selector::parse("a.download-btn[href]").unwrap());
 
@@ -549,6 +550,9 @@ async fn scrape_series(
 
     let html = fetch_html(client, series_url).await?;
     let seasons = collect_content_links(&html, series_url);
+    if seasons.is_empty() {
+        bail!("no seasons found on {series_url}; the site layout may have changed");
+    }
 
     for season_url in seasons {
         let episodes =
