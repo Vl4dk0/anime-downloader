@@ -90,8 +90,14 @@ fn links(
         .collect()
 }
 
+/// Unlike `entries`, an empty result is valid: the site serves some catalog
+/// letters (e.g. "X") as a well-formed page with no series in it.
+pub fn listing(html: &str, base: &Url) -> Vec<Entry> {
+    links(html, base, &CONTENT, false, true)
+}
+
 pub fn entries(html: &str, base: &Url) -> Result<Vec<Entry>> {
-    let entries = links(html, base, &CONTENT, false, true);
+    let entries = listing(html, base);
     if entries.is_empty() {
         return Err(LayoutError {
             url: base.clone(),

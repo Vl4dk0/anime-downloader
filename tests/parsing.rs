@@ -130,6 +130,8 @@ fn malformed_links_are_skipped_and_duplicates_are_removed() {
 #[test]
 fn missing_expected_entries_explain_a_changed_layout() {
     let base = Url::parse(ROOT).unwrap();
+    // A catalog letter page may legitimately list nothing.
+    assert!(html::listing("<p>empty</p>", &base).is_empty());
     for error in [
         html::entries("<p>empty</p>", &base).unwrap_err(),
         html::episode_file("<p>empty</p>", &base).unwrap_err(),

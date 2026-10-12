@@ -6,8 +6,9 @@ mod widgets;
 
 use anime_downloader::{
     engine::{self, Event, Request},
-    site::{http::Http, Season, Series},
+    site::{catalog, http::Http, Season, Series},
 };
+use catalog_view::SectionState;
 use eframe::egui;
 use std::{
     collections::BTreeMap,
@@ -66,9 +67,7 @@ pub struct App {
     local_events: mpsc::Receiver<LocalEvent>,
     screen: Screen,
     catalog: Vec<Series>,
-    warnings: Vec<String>,
-    catalog_loading: bool,
-    catalog_error: Option<String>,
+    sections: catalog_view::Sections,
     search: String,
     selection: Option<Selection>,
     folder: Option<PathBuf>,
@@ -98,9 +97,7 @@ impl App {
             local_events,
             screen: Screen::Catalog,
             catalog: Vec::new(),
-            warnings: Vec::new(),
-            catalog_loading: true,
-            catalog_error: None,
+            sections: catalog_view::Sections::loading(),
             search: String::new(),
             selection: None,
             folder: None,
@@ -131,15 +128,12 @@ impl App {
     fn poll(&mut self) {
         while let Ok(event) = self.events.try_recv() {
             match event {
-                Event::CatalogLoaded { series, warnings } => {
-                    self.catalog = series;
-                    self.warnings = warnings;
-                    self.catalog_loading = false;
-                    self.catalog_error = None;
+                Event::SectionLoaded { kind, series } => {
+                    self.sections.set(kind, SectionState::Loaded);
+                    catalog::merge(&mut self.catalog, kind, series);
                 }
-                Event::CatalogFailed(error) => {
-                    self.catalog_loading = false;
-                    self.catalog_error = Some(error);
+                Event::SectionFailed { kind, reason } => {
+                    self.sections.set(kind, SectionState::Unavailable(reason));
                 }
                 Event::SeasonsLoaded {
                     series_url,

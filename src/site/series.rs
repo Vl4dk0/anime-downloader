@@ -1,7 +1,7 @@
 use super::{
     html,
     http::{fetch_html, Http},
-    Season, Series, DISCOVERY_CONCURRENCY,
+    Season, Series, DISCOVERY_CONCURRENCY, RETRIES,
 };
 use anyhow::Result;
 use futures::{stream, StreamExt};
@@ -48,7 +48,10 @@ pub async fn seasons(
     series: &Series,
     cancel: &CancellationToken,
 ) -> Result<Vec<Season>> {
-    parse_seasons(&fetch_html(http, &series.url, cancel).await?, series)
+    parse_seasons(
+        &fetch_html(http, &series.url, RETRIES, cancel).await?,
+        series,
+    )
 }
 
 pub struct EpisodeDiscovery {
@@ -61,13 +64,13 @@ pub async fn episodes(
     url: &Url,
     cancel: &CancellationToken,
 ) -> Result<EpisodeDiscovery> {
-    let first = fetch_html(http, url, cancel).await?;
+    let first = fetch_html(http, url, RETRIES, cancel).await?;
     let mut episodes = html::entries(&first, url)?;
     let mut seen: HashSet<_> = episodes.iter().map(|entry| entry.url.clone()).collect();
     let pages = html::pagination(&first, url);
     let mut pending = stream::iter(pages.into_iter().map(|page| async move {
         let result = async {
-            let body = fetch_html(http, &page, cancel).await?;
+            let body = fetch_html(http, &page, RETRIES, cancel).await?;
             html::entries(&body, &page)
         }
         .await;
@@ -93,12 +96,12 @@ pub async fn episodes(
 }
 
 pub async fn resolve(http: &Http, episode: &Url, cancel: &CancellationToken) -> Result<Url> {
-    let body = fetch_html(http, episode, cancel).await?;
+    let body = fetch_html(http, episode, RETRIES, cancel).await?;
     // Some live seasons link straight to .mp4.php without an episode directory.
     let file = if episode.path().ends_with(".mp4.php") {
         return html::download_link(&body, episode);
     } else {
         html::episode_file(&body, episode)?
     };
-    html::download_link(&fetch_html(http, &file, cancel).await?, &file)
+    html::download_link(&fetch_html(http, &file, RETRIES, cancel).await?, &file)
 }

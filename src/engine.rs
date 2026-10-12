@@ -1,6 +1,6 @@
 use crate::{
     download::{self, Outcome, Progress},
-    site::{self, html::Entry, http::Http, Season, Series},
+    site::{self, html::Entry, http::Http, Kind, Season, Series},
 };
 use anyhow::{Context, Result};
 use eframe::egui;
@@ -31,11 +31,15 @@ pub enum Request {
 }
 
 pub enum Event {
-    CatalogLoaded {
+    // Per section, so the list can show whichever source answers first.
+    SectionLoaded {
+        kind: Kind,
         series: Vec<Series>,
-        warnings: Vec<String>,
     },
-    CatalogFailed(String),
+    SectionFailed {
+        kind: Kind,
+        reason: String,
+    },
     SeasonsLoaded {
         series_url: Url,
         seasons: Vec<Season>,
@@ -129,17 +133,9 @@ async fn run(http: Http, mut requests: async_mpsc::UnboundedReceiver<Request>, s
                     Request::LoadCatalog => {
                         catalog_cancel.cancel();
                         catalog_cancel = CancellationToken::new();
-                        let cancel = catalog_cancel.clone();
-                        let http = http.clone();
-                        let sink = sink.clone();
-                        background.spawn(async move {
-                            let result = site::catalog::load(&http, &cancel).await;
-                            if cancel.is_cancelled() { return; }
-                            sink.send(match result {
-                                Ok((series, warnings)) => Event::CatalogLoaded { series, warnings },
-                                Err(error) => Event::CatalogFailed(format!("{error:#}")),
-                            });
-                        });
+                        for (kind, _, root) in site::catalog::SECTIONS {
+                            background.spawn(load_section(http.clone(), kind, root, catalog_cancel.clone(), sink.clone()));
+                        }
                     }
                     Request::LoadSeasons(series) => {
                         seasons_cancel.cancel();
@@ -181,6 +177,33 @@ async fn run(http: Http, mut requests: async_mpsc::UnboundedReceiver<Request>, s
     if let Some(job) = job {
         let _ = job.await;
     }
+}
+
+async fn load_section(
+    http: Http,
+    kind: Kind,
+    root: &'static str,
+    cancel: CancellationToken,
+    sink: Sink,
+) {
+    let result = site::catalog::load_section(&http, kind, root, &cancel).await;
+    if cancel.is_cancelled() {
+        return;
+    }
+    sink.send(match result {
+        Ok(series) => Event::SectionLoaded { kind, series },
+        Err(error) => {
+            tracing::warn!(
+                ?kind,
+                error = format!("{error:#}"),
+                "catalog section unavailable"
+            );
+            Event::SectionFailed {
+                kind,
+                reason: site::catalog::short_reason(&error),
+            }
+        }
+    });
 }
 
 #[derive(Clone)]

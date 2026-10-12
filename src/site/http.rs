@@ -1,7 +1,7 @@
-use super::{DISCOVERY_CONCURRENCY, RETRIES};
+use super::DISCOVERY_CONCURRENCY;
 use anyhow::{anyhow, Context, Result};
 use reqwest::Client;
-use std::{sync::Arc, time::Duration};
+use std::{fmt, sync::Arc, time::Duration};
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use url::Url;
@@ -33,9 +33,29 @@ pub fn retry_delay(attempt: usize) -> Duration {
     Duration::from_secs(2_u64.pow((attempt.saturating_sub(1)) as u32))
 }
 
-pub async fn fetch_html(http: &Http, url: &Url, cancel: &CancellationToken) -> Result<String> {
+/// A distinct type so callers can report an outage as just its status code.
+#[derive(Debug)]
+pub struct StatusError {
+    pub status: u16,
+    url: Url,
+}
+impl fmt::Display for StatusError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "HTTP {} for {}", self.status, self.url)
+    }
+}
+impl std::error::Error for StatusError {}
+
+/// `attempts` is per call because a page the user is waiting on to browse is
+/// worth less patience than one a running download depends on.
+pub async fn fetch_html(
+    http: &Http,
+    url: &Url,
+    attempts: usize,
+    cancel: &CancellationToken,
+) -> Result<String> {
     let mut last_error = None;
-    for attempt in 1..=RETRIES {
+    for attempt in 1..=attempts {
         let result = tokio::select! {
             biased;
             _ = cancel.cancelled() => return Err(anyhow!("cancelled")),
@@ -47,9 +67,10 @@ pub async fn fetch_html(http: &Http, url: &Url, cancel: &CancellationToken) -> R
                 return Ok(body);
             }
             Err(error) => {
-                tracing::warn!(%url, attempt, %error, "HTML fetch failed");
+                // Callers report the final failure; single attempts are only diagnostics.
+                tracing::debug!(%url, attempt, %error, "HTML fetch failed");
                 last_error = Some(error);
-                if attempt < RETRIES {
+                if attempt < attempts {
                     pause(retry_delay(attempt), cancel).await?;
                 }
             }
@@ -73,7 +94,11 @@ async fn fetch_html_once(http: &Http, url: &Url) -> Result<String> {
         .with_context(|| format!("GET {url}"))?;
     let status = response.status();
     if !status.is_success() {
-        anyhow::bail!("HTTP {} for {url}", status.as_u16());
+        return Err(StatusError {
+            status: status.as_u16(),
+            url: url.clone(),
+        }
+        .into());
     }
     response.text().await.with_context(|| format!("read {url}"))
 }
