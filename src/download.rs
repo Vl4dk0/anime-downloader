@@ -232,7 +232,7 @@ fn expected_size(
         "Content-Length disagrees with Content-Range"
     );
     if total == "*" {
-        return Ok(length_total);
+        return Ok(None);
     }
     let total = total.parse::<u64>().context("invalid range total")?;
     anyhow::ensure!(end <= total, "range exceeds video size");
@@ -276,6 +276,10 @@ mod tests {
             expected_size(partial, 5, None, Some("bytes 5-9/*")).unwrap(),
             None
         );
+        assert_eq!(
+            expected_size(partial, 5, Some(5), Some("bytes 5-9/*")).unwrap(),
+            None
+        );
         for range in [
             None,
             Some("bytes 4-9/10"),
@@ -308,5 +312,8 @@ mod tests {
         )
         .unwrap();
         assert!(validate_complete(8, size).is_err());
+        let size =
+            expected_size(StatusCode::PARTIAL_CONTENT, 5, Some(5), Some("bytes 5-9/*")).unwrap();
+        assert!(validate_complete(10, size).is_err());
     }
 }
